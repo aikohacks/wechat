@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 
-export default function ChatBox({ messages, socketId }) {
+export default function ChatBox({ messages, currentUsername }) {
   const bottomRef = useRef(null);
 
   useEffect(() => {
@@ -15,11 +15,11 @@ export default function ChatBox({ messages, socketId }) {
         <div className="text-gray-500 text-center mt-10">No messages yet</div>
       ) : (
         messages.map((msg, index) => {
-          const isMe = msg.sender === socketId;
+          const isMe = msg.fromUsername === currentUsername;
 
           return (
             <div
-              key={index}
+              key={msg._id || index}
               className={`flex mb-3 ${isMe ? "justify-end" : "justify-start"}`}
             >
               <div
@@ -31,11 +31,12 @@ export default function ChatBox({ messages, socketId }) {
               >
                 {!isMe && (
                   <div className="text-xs font-bold text-gray-600 mb-1">
-                    {msg.username}
+                    {msg.fromUsername}
                   </div>
                 )}
 
                 <div>{msg.text}</div>
+
                 <div className="text-[10px] text-right mt-1 opacity-70">
                   {msg.time}
                 </div>

@@ -5,10 +5,16 @@ export default function Sidebar({
   socketId,
   setSelectedUser,
   selectedUser,
+  currentUsername,
 }) {
   return (
     <div className="w-1/3 bg-white border-r">
-      <div className="p-4 font-bold bg-gray-200 text-black">Chats</div>
+      <div className="p-4 font-bold bg-gray-200 text-black">
+        Chats
+        <div className="text-sm font-normal text-gray-600 mt-1">
+          You: {currentUsername}
+        </div>
+      </div>
 
       {Object.entries(users).map(([id, name]) => {
         if (id === socketId) return null;

@@ -6,21 +6,13 @@ const messageSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
-    sender: {
-      type: String,
-      required: true,
-    },
-    receiver: {
-      type: String,
-      required: true,
-    },
     fromUsername: {
       type: String,
-      default: "",
+      required: true,
     },
     toUsername: {
       type: String,
-      default: "",
+      required: true,
     },
     time: {
       type: String,
