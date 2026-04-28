@@ -2,22 +2,26 @@ const mongoose = require("mongoose");
 
 const messageSchema = new mongoose.Schema(
   {
-    text: {
-      type: String,
+    room: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Room",
       required: true,
     },
-    fromUsername: {
-      type: String,
+    sender: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
       required: true,
     },
-    toUsername: {
+    senderUsername: { type: String, required: true },
+    type: {
       type: String,
-      required: true,
+      enum: ["text", "image", "file"],
+      default: "text",
     },
-    time: {
-      type: String,
-      required: true,
-    },
+    text: { type: String, default: "" },
+    fileUrl: { type: String, default: "" },
+    fileName: { type: String, default: "" },
+    seenBy: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
   },
   { timestamps: true }
 );

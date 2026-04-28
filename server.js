@@ -1,28 +1,45 @@
+require("dotenv").config();
 const express = require("express");
 const http = require("http");
 const mongoose = require("mongoose");
 const { Server } = require("socket.io");
+const path = require("path");
+const fs = require("fs");
+const cors = require("cors");
+
+const { verifyToken } = require("./middleware/auth");
+const authRoutes = require("./routes/auth");
+const roomRoutes = require("./routes/rooms");
+const uploadRoutes = require("./routes/upload");
+
+const Message = require("./models/Message");
+const Room = require("./models/Room");
+const ReadReceipt = require("./models/ReadReceipt");
 
 const app = express();
 const server = http.createServer(app);
 
+// Ensure uploads folder exists
+const uploadsDir = path.join(__dirname, "uploads");
+if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir);
+
+// Middleware
+app.use(cors({ origin: "http://localhost:3000" }));
+app.use(express.json());
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+
+// Routes
+app.use("/api/auth", authRoutes);
+app.use("/api/rooms", roomRoutes);
+app.use("/api/upload", uploadRoutes);
+
+// MongoDB
 mongoose
-  .connect("mongodb://127.0.0.1:27017/privatechat")
-  .then(() => console.log("MongoDB connected"))
-  .catch((err) => console.log("MongoDB error:", err.message));
+  .connect(process.env.MONGO_URI)
+  .then(() => console.log("✅ MongoDB connected"))
+  .catch((err) => console.log("❌ MongoDB error:", err.message));
 
-const messageSchema = new mongoose.Schema(
-  {
-    text: String,
-    fromUsername: String,
-    toUsername: String,
-    time: String,
-  },
-  { timestamps: true }
-);
-
-const Message = mongoose.model("Message", messageSchema);
-
+// Socket.IO
 const io = new Server(server, {
   cors: {
     origin: "http://localhost:3000",
@@ -30,84 +47,97 @@ const io = new Server(server, {
   },
 });
 
-let users = {}; // socketId -> username
-let userSockets = {}; // username -> socketId
+// Online users map: userId -> socketId
+const onlineUsers = new Map();
 
-io.on("connection", async (socket) => {
-  console.log("CONNECTED:", socket.id);
+// Socket auth middleware
+io.use((socket, next) => {
+  const token = socket.handshake.auth.token;
+  const decoded = verifyToken(token);
+  if (!decoded) return next(new Error("Authentication error"));
+  socket.user = decoded;
+  next();
+});
 
-  try {
-    const oldMessages = await Message.find().sort({ createdAt: 1 });
-    socket.emit("loadMessages", oldMessages);
-    console.log("OLD MESSAGES SENT:", oldMessages.length);
-  } catch (err) {
-    console.log("LOAD ERROR:", err.message);
-  }
+io.on("connection", (socket) => {
+  const { userId, username } = socket.user;
 
-  socket.on("join", (username) => {
-    const cleanUsername = username?.trim();
+  onlineUsers.set(userId, socket.id);
+  io.emit("onlineUsers", Array.from(onlineUsers.keys()));
+  console.log(`✅ CONNECTED: ${username} (${socket.id})`);
 
-    if (!cleanUsername) {
-      console.log("JOIN BLOCKED: empty username");
-      return;
+  // Join all rooms this user belongs to
+  socket.on("joinRooms", (roomIds) => {
+    if (Array.isArray(roomIds)) {
+      roomIds.forEach((id) => socket.join(id));
     }
-
-    users[socket.id] = cleanUsername;
-    userSockets[cleanUsername] = socket.id;
-
-    console.log("JOIN:", cleanUsername, socket.id);
-    console.log("USERS:", users);
-
-    io.emit("onlineUsers", users);
   });
 
-  socket.on("privateMessage", async (payload) => {
-    console.log("PRIVATE MESSAGE RECEIVED:", payload);
+  // Send a message
+  socket.on(
+    "sendMessage",
+    async ({ roomId, text, type, fileUrl, fileName }) => {
+      try {
+        const message = await Message.create({
+          room: roomId,
+          sender: userId,
+          senderUsername: username,
+          type: type || "text",
+          text: text || "",
+          fileUrl: fileUrl || "",
+          fileName: fileName || "",
+          seenBy: [userId],
+        });
 
+        await Room.findByIdAndUpdate(roomId, {
+          lastMessage:
+            type === "text" ? text : `📎 ${fileName || "file"}`,
+          lastMessageAt: new Date(),
+        });
+
+        // Emit to everyone in the room (including sender)
+        io.to(roomId).emit("newMessage", message);
+      } catch (err) {
+        console.log("❌ MESSAGE ERROR:", err.message);
+      }
+    }
+  );
+
+  // Typing indicators
+  socket.on("typing", ({ roomId }) => {
+    socket.to(roomId).emit("userTyping", { username, roomId });
+  });
+
+  socket.on("stopTyping", ({ roomId }) => {
+    socket.to(roomId).emit("userStopTyping", { username, roomId });
+  });
+
+  // Mark messages as seen
+  socket.on("markSeen", async ({ roomId }) => {
     try {
-      if (!payload?.text || !payload?.fromUsername || !payload?.toUsername) {
-        console.log("MESSAGE BLOCKED: invalid payload");
-        return;
-      }
+      await ReadReceipt.findOneAndUpdate(
+        { user: userId, room: roomId },
+        { lastRead: new Date() },
+        { upsert: true, new: true }
+      );
 
-      const savedMessage = await Message.create({
-        text: payload.text.trim(),
-        fromUsername: payload.fromUsername.trim(),
-        toUsername: payload.toUsername.trim(),
-        time: payload.time || new Date().toLocaleTimeString(),
-      });
+      await Message.updateMany(
+        { room: roomId, seenBy: { $ne: userId } },
+        { $addToSet: { seenBy: userId } }
+      );
 
-      const receiverSocketId = userSockets[payload.toUsername];
-
-      console.log("SAVED:", savedMessage);
-      console.log("RECEIVER SOCKET:", receiverSocketId);
-
-      socket.emit("receivePrivateMessage", savedMessage);
-
-      if (receiverSocketId) {
-        io.to(receiverSocketId).emit("receivePrivateMessage", savedMessage);
-      }
-
-      console.log("MESSAGE EMITTED BACK");
+      socket.to(roomId).emit("messageSeen", { userId, roomId });
     } catch (err) {
-      console.log("SAVE ERROR:", err.message);
+      console.log("❌ SEEN ERROR:", err.message);
     }
   });
 
   socket.on("disconnect", () => {
-    const disconnectedUsername = users[socket.id];
-
-    console.log("DISCONNECTED:", socket.id, disconnectedUsername);
-
-    if (disconnectedUsername) {
-      delete userSockets[disconnectedUsername];
-    }
-
-    delete users[socket.id];
-    io.emit("onlineUsers", users);
+    onlineUsers.delete(userId);
+    io.emit("onlineUsers", Array.from(onlineUsers.keys()));
+    console.log(`❌ DISCONNECTED: ${username}`);
   });
 });
 
-server.listen(5000, () => {
-  console.log("Server running on port 5000");
-});
+const PORT = process.env.PORT || 5000;
+server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
